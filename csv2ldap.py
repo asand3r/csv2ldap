@@ -9,6 +9,8 @@ from os import path
 
 def run_update(conn):
     """
+    The function runs update process.
+
     :param conn:
     Is result of ldap_connect() function from libldap.py - ldap3.Connection.
     :return:
