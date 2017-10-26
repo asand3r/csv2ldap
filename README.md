@@ -2,7 +2,7 @@
 Updates LDAP users from CSV file
 
 Dependencies:
-- Python => 3.4 (smaller version, whant has been tested)
+- Python => 3.4 (smaller version, what has been tested)
 - ldap3 =>2.2
 
 
