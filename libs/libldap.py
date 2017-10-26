@@ -9,7 +9,7 @@ def ldap_connect(server_name, ldap_user, ldap_password):
 
     :param server_name:
      <str>
-    Fully Qualified LDAP server name.
+    Fully Qualified LDAP server name or IP address.
     :param ldap_user:
     Username (sAMAccountName) using to connect with NTLM.
     :param ldap_password:
@@ -28,7 +28,9 @@ def ldap_connect(server_name, ldap_user, ldap_password):
 
 def update_user(conn, user_dn, updates):
     """
-    New version of update_user
+    Updates LDAP user's object by it's DistinguishedName. Also takes dict, what has info how to update values.
+    Dict format describe in ldap3 project documentation and represents similar structure:
+    {'attribute_name': [('MODIFY_REPLACE', [new_val.encode()])]}
 
     :param conn:
     ldap3.Connection object.
@@ -45,7 +47,7 @@ def update_user(conn, user_dn, updates):
 
 def get_users(conn, searchfilter=LDAP_SETTINGS.LDAP_SEARCHFILTER):
     """
-    Function search users in LDAP catalog using search filter in config file
+    Function search users in LDAP catalog using search filter in config file.
 
     :param conn:
     ldap3.Connection object.

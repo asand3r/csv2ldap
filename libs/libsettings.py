@@ -7,6 +7,8 @@ from configparser import RawConfigParser
 
 def get_config(cfg_file):
     """
+    The function reads csv2ldap.conf config file and return RawConfigParser object.
+
     :param cfg_file:
     Path to config file
     :return:
@@ -26,7 +28,7 @@ def get_config(cfg_file):
 
 def write_log(logger, msg_level, message):
     """
-    Writes string to log with logging module.
+    Writes string to log using logging module.
 
     :param logger:
     Logger object to use.
@@ -51,7 +53,7 @@ def write_log(logger, msg_level, message):
 
 def get_logger(handler, formatter):
     """
-    Getting logger object (logging.getLogger())
+    Getting logger object (logging.getLogger()).
 
     :param handler:
     logging.Handler - set log handler (where you will write log string)
