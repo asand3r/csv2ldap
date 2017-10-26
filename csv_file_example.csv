@@ -1,0 +1,2 @@
+﻿EmployeeID;Surname;GivenName;MiddleName;Office;ShortPhoneNumber;MobilePhone;JobTitle;Department;ManagerEmployeeID
+0000001071;Ivaniv;Ivan;Ivanovich;123;42;8(098)765-43-12;Manger;Manager department;0000000093
