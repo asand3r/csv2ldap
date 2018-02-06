@@ -388,7 +388,7 @@ if __name__ == '__main__':
 
     # CSV section
     if config.has_section('CSV'):
-        CSV_FILE = config.get('CSV', 'DataPath')
+        CSV_FILE = config.get('CSV', 'FilePath')
         CSV_DELIM = config.get('CSV', 'Delimiter')
         CSV_ENCODING = config.get('CSV', 'Encoding')
 
@@ -422,30 +422,27 @@ if __name__ == '__main__':
     # Creating logger
     LOGGER = get_logger(handler=log_handler, formatter=log_formatter)
 
-    # Variable to store last CSV md5 sum
-    last_md5 = ''
+    init_md5 = ''
     write_log(LOGGER, 'INFO', 'Starting csv2ldap at {}'.format(time.strftime('%d.%m.%Y %X')))
-    print('\n{}: csv2ldap started.\nPress CTRL-C to stop it...'.format(time.strftime(DATE_FMT)))
+    print('\n{}: csv2ldap started.\nPress CTRL-C to stop it...'.format(time.strftime('%d.%m.%Y %X')))
     while True:
         try:
             if os.path.exists(CSV_FILE):
                 try:
                     with open(CSV_FILE, 'rb') as csv_file:
                         current_md5 = md5(csv_file.read()).hexdigest()
-                except IOError:
-                    write_log(LOGGER, 'CRITICAL', 'Cannot open CSV data file. Check your permissions.')
-                    raise SystemExit('Cannot open CSV data file.')
+                except (IOError, FileNotFoundError):
+                    write_log(LOGGER, 'CRITICAL', 'Cannot read CSV file: {}'.format(CSV_FILE))
+                    raise SystemExit('Cannot read CSV file: {}'.format(CSV_FILE))
 
-                if last_md5 != current_md5:
+                if init_md5 != current_md5:
                     print('{}: Update task started'.format(time.strftime('%d.%m.%Y %X')))
                     with ldap_connect(LDAP_SERVER, LDAP_USER, LDAP_PASSWORD) as ldap_conn:
                         run_update(ldap_conn)
                     time.sleep(WAIT_SEC)
                 else:
                     time.sleep(WAIT_SEC)
-                # Store new md5
-                last_md5 = current_md5
-            # Where is not CSV file
+                init_md5 = current_md5
             else:
                 write_log(LOGGER, 'CRITICAL', "File '{file}' doesn't exist".format(file=CSV_FILE))
                 raise SystemExit("CSV file doesn't exist")
