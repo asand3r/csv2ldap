@@ -129,20 +129,20 @@ def get_users(conn, searchfilter):
     return conn.search(search_base=base_dn, search_filter=searchfilter, attributes=LDAP_GET_ATTRS)
 
 
-def get_dn(conn, attr):
+def get_dn(conn, employeeid):
     """
     Function gets user DistinguishedName from LDAP catalog by attribute.
 
     :param conn:
     ldap3.Connection object.
-    :param attr:
+    :param employeeid:
     LDAP attribute data.
     :return:
     List with LDAP user DN's.
     """
 
     # Making search filter (employeeID by default)
-    filter_str = '(&(objectClass=user)(EmployeeID={}))'.format(attr)
+    filter_str = '(&(objectClass=user)(EmployeeID={}))'.format(employeeid)
 
     # Search in LDAP with our filter
     conn.search(conn.server.info.other['rootDomainNamingContext'], filter_str)
@@ -199,6 +199,24 @@ def preprocessing(attr_value, method):
     return new_attr
 
 
+def transform_mobile(phone_number):
+    """
+    The function transform phone number to one format.
+    :param phone_number:
+    str() String with phone number.
+    :return:
+    str() New phone number.
+    """
+
+    if re.match(r'^\d[-\s]?(\d{3}-){2}(\d{2}-?){2}', phone_number):
+        old = phone_number.replace('-', '').replace(' ', '')
+        new = "+7 ({0}) {1}-{2}-{3}".format(old[1:4], old[4:7], old[7:9], old[9:11])
+    else:
+        # Default - set value as is
+        new = phone_number
+    return new
+
+
 def load_csv(conn, data_file, delimiter=';'):
     """
     The function prepares CSV data to synchronize with LDAP. It's read the file, process it and return dict with
@@ -207,29 +225,25 @@ def load_csv(conn, data_file, delimiter=';'):
     :param conn:
     ldap3.Connection object.
     :param data_file:
-    Path to CSV datafile.
+    str() Path to CSV datafile.
     :param delimiter:
-    Delimiter to separate CSV columns. Default is ';', can be set in config file.
+    str() Delimiter to separate CSV columns. Default is ';', can be set in config file.
     :return:
-    dict
+    dict()
     {'employeeID': {Dict with LDAP attrs properties}}
     {'0000001029': {'sn': 'Ivanov', 'givenName': 'Ivan'}}
     """
 
-    # Dict to store all employees with key as employeeID
     all_employees = {}
 
     # Opening CSV file and read it as dict
     with open(data_file, 'r', encoding=CSV_ENCODING) as users_csv:
         csv_data = csv.DictReader(users_csv, delimiter=delimiter)
-        # Making counter for writing line number to log file
         line_num = 1
-        # Going through all data in csv
         for row in csv_data:
             empl_id = row['EmployeeID']
             # If in values has None, it means that data count bigger than headers and CSV is incorrect
             if None not in row.values():
-                # Making attribute list for update
                 calc_attrs = ['initials', 'description', 'mobile', 'manager', 'displayname']
                 update_attrs = list(set(LDAP_UPD_ATTRS) - set(calc_attrs))
 
@@ -256,7 +270,7 @@ def load_csv(conn, data_file, delimiter=';'):
                 sn = update_dict['sn']
                 given_name = update_dict['givenname']
                 middle_name = update_dict['middlename']
-                if len(middle_name) != 0:
+                if middle_name != '':
                     initials = "{}. {}.".format(given_name[0], middle_name[0])
                     description = '{sn} {gn} {mn}'.format(sn=sn, gn=given_name, mn=middle_name)
                 else:
@@ -267,34 +281,21 @@ def load_csv(conn, data_file, delimiter=';'):
                 update_dict['displayname'] = '{sn} {initials}'.format(sn=sn, initials=initials)
 
                 # mobile
-                # Trying to set it to one view for all
-                if re.match(r'^\d[-\s]?(\d{3}-){2}(\d{2}-?){2}', row['MobilePhone']):
-                    old = row['MobilePhone'].replace('-', '').replace(' ', '')
-                    new = "+7 ({0}) {1}-{2}-{3}".format(old[1:4], old[4:7], old[7:9], old[9:11])
-                else:
-                    # Default - set CSV value as is
-                    new = row['MobilePhone']
-                update_dict['mobile'] = new
-
+                update_dict['mobile'] = transform_mobile(row['MobilePhone'])
                 # manager
-                m_empl_id = row['ManagerEmployeeID']
-                manager_dn = get_dn(conn, attr=m_empl_id)
+                manager_dn = get_dn(conn, employeeid=row['ManagerEmployeeID'])
                 if len(manager_dn) == 1:
                     manager_dn = manager_dn[0]
-                elif len(manager_dn) > 1:
-                    manager_dn = ""
-                    write_log(LOGGER, 'INFO', "Found many DN's for {0}, check your LDAP catalog".format(m_empl_id))
-                # If found nothing - writing to log
                 else:
                     manager_dn = ""
-                    write_log(LOGGER, 'INFO', "Cannot find DN for '{0}'".format(m_empl_id))
+                    write_log(LOGGER, 'WARNING', "Found '{}' users for '{}' employeeid".format(
+                        len(manager_dn), row['ManagerEmployeeID']))
                 update_dict['manager'] = manager_dn
 
-                # Finally put the update_dict to the global dict
+                # Put update_dict to the global dict
                 all_employees[empl_id] = update_dict
             else:
-                if empl_id is not None:
-                    write_log(LOGGER, 'WARNING', "Missed values in CSV, line '{}'.".format(line_num))
+                write_log(LOGGER, 'WARNING', "Missed values in CSV, line '{}'.".format(line_num))
             # Incrementing line counter
             line_num += 1
     return all_employees
@@ -395,8 +396,8 @@ if __name__ == '__main__':
     # EXCEPTION section
     EXCEPTION_DICT = {}
     if config.has_section('EXCEPTIONS') and config.items('EXCEPTIONS'):
-        for employeeid, attrs in config.items('EXCEPTIONS'):
-            EXCEPTION_DICT[employeeid] = attrs.split(',')
+        for eid, attrs in config.items('EXCEPTIONS'):
+            EXCEPTION_DICT[eid] = attrs.split(',')
 
     # ATTR MATCHING section
     ATTR_MATCHING_DICT = {}
