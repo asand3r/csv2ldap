@@ -1,9 +1,9 @@
 import os
-import csv
 import re
+import csv
+import time
 import ldap3
 import logging
-import time
 from hashlib import md5
 from ast import literal_eval
 from argparse import ArgumentParser
@@ -496,5 +496,4 @@ if __name__ == '__main__':
                 time.sleep(WAIT_SEC)
             init_md5 = current_md5
         except KeyboardInterrupt:
-            print('{}: csv2ldap stopped by the user'.format(time.strftime('%d.%m.%Y %X')))
-            break
+            raise SystemExit('{}: csv2ldap stopped by the user'.format(time.strftime('%d.%m.%Y %X')))
