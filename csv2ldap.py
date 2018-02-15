@@ -6,6 +6,7 @@ import logging
 import time
 from hashlib import md5
 from ast import literal_eval
+from argparse import ArgumentParser
 from configparser import RawConfigParser
 from logging.handlers import RotatingFileHandler
 from ldap3.core.exceptions import LDAPSocketOpenError
@@ -126,7 +127,9 @@ def get_users(conn, searchfilter):
     """
 
     base_dn = conn.server.info.other['rootDomainNamingContext'][0]
-    return conn.search(search_base=base_dn, search_filter=searchfilter, attributes=LDAP_GET_ATTRS)
+    conn.search(search_base=base_dn, search_filter=searchfilter, attributes=LDAP_GET_ATTRS)
+    ldap_users = conn.entries
+    return ldap_users
 
 
 def get_dn(conn, employeeid):
@@ -217,6 +220,37 @@ def transform_mobile(phone_number):
     return new
 
 
+def check_csv(data_file):
+    """
+    The function validate CSV file structure.
+
+    :param data_file:
+    str() Path to CSV file with data.
+    :return:
+    True if all fields are unique and tuple (False, list()) if not.
+    """
+
+    empl_ids = []
+    not_unique = []
+    with open(data_file, 'r', encoding=CSV_ENCODING) as file:
+        rows = csv.reader(file)
+        for row in rows:
+            if len(row) > 0:
+                employeeid = row[0].split(CSV_DELIM)
+                empl_ids.append(employeeid[0])
+    # Remove header
+    empl_ids = empl_ids[1:]
+
+    for empl_id in empl_ids:
+        if empl_ids.count(empl_id) > 1:
+            not_unique.append(empl_id)
+
+    if len(not_unique) > 0:
+        return False, set(not_unique)
+    else:
+        return True
+
+
 def load_csv(conn, data_file, delimiter=';'):
     """
     The function prepares CSV data to synchronize with LDAP. It's read the file, process it and return dict with
@@ -256,7 +290,7 @@ def load_csv(conn, data_file, delimiter=';'):
                 update_dict = {}
 
                 for attr in update_attrs:
-                    # PREPROCESSING
+                    # Preprocessing
                     if attr in (key.lower() for key in PREP_DICT.keys()):
                         method = PREP_DICT[attr].lower()
                         original_attr = row[ATTR_MATCHING_DICT[attr]]
@@ -367,13 +401,25 @@ def run_update(conn):
 
 
 if __name__ == '__main__':
+    # Current program version
+    VERSION = '0.1'
+
+    # Parse all given arguments
+    parser = ArgumentParser(description='Script for load data from CSV to LDAP catalog.', add_help=True)
+    parser.add_argument('-c', '--config', type=str, default='csv2ldap.conf', help='Path to config file')
+    parser.add_argument('-w', '--wait', type=int, help='Timeout before next run')
+    parser.add_argument('-v', '--version', action='version', version=VERSION, help='Print the script version and exit')
+    args = parser.parse_args()
+
     # Lading config from file
-    config = read_config(path='csv2ldap.conf')
+    config = read_config(path=args.config)
 
     # MAIN section
     if config.has_section('MAIN'):
         WAIT_SEC = config.getint('MAIN', 'waitseconds', fallback=30)
         DATE_FMT = config.get('MAIN', 'DateFormat', fallback='%d.%m.%Y %X')
+    if args.wait:
+        WAIT_SEC = args.wait
 
     # LDAP section
     if config.has_section('LDAP'):
@@ -392,6 +438,8 @@ if __name__ == '__main__':
         CSV_FILE = config.get('CSV', 'FilePath')
         CSV_DELIM = config.get('CSV', 'Delimiter')
         CSV_ENCODING = config.get('CSV', 'Encoding')
+    else:
+        raise SystemExit("ERROR: Config file missed 'CSV' section. You must specify it before run.")
 
     # EXCEPTION section
     EXCEPTION_DICT = {}
@@ -404,7 +452,7 @@ if __name__ == '__main__':
     if config.has_section('ATTR MATCHING') and config.items('ATTR MATCHING'):
         ATTR_MATCHING_DICT = dict(config.items('ATTR MATCHING'))
 
-    # PREPROCESSING section (EXPERIMENTAL)
+    # PREPROCESSING section
     PREP_DICT = {}
     if config.has_section('PREPROCESSING') and config.items('PREPROCESSING'):
         PREP_DICT = dict(config.items('PREPROCESSING'))
@@ -428,25 +476,25 @@ if __name__ == '__main__':
     print('\n{}: csv2ldap started.\nPress CTRL-C to stop it...'.format(time.strftime('%d.%m.%Y %X')))
     while True:
         try:
-            if os.path.exists(CSV_FILE):
-                try:
-                    with open(CSV_FILE, 'rb') as csv_file:
-                        current_md5 = md5(csv_file.read()).hexdigest()
-                except (IOError, FileNotFoundError):
-                    write_log(LOGGER, 'CRITICAL', 'Cannot read CSV file: {}'.format(CSV_FILE))
-                    raise SystemExit('Cannot read CSV file: {}'.format(CSV_FILE))
+            try:
+                with open(CSV_FILE, 'rb') as csv_file:
+                    current_md5 = md5(csv_file.read()).hexdigest()
+            except (IOError, FileNotFoundError):
+                write_log(LOGGER, 'CRITICAL', 'Cannot read CSV file: {}'.format(CSV_FILE))
+                raise SystemExit('Cannot read CSV file: {}'.format(CSV_FILE))
 
-                if init_md5 != current_md5:
-                    print('{}: Update task started'.format(time.strftime('%d.%m.%Y %X')))
+            if init_md5 != current_md5:
+                print('{}: Update task started'.format(time.strftime('%d.%m.%Y %X')))
+                csv_stat = check_csv(CSV_FILE)
+                if csv_stat is True:
                     with ldap_connect(LDAP_SERVER, LDAP_USER, LDAP_PASSWORD) as ldap_conn:
                         run_update(ldap_conn)
-                    time.sleep(WAIT_SEC)
                 else:
-                    time.sleep(WAIT_SEC)
-                init_md5 = current_md5
+                    write_log(LOGGER, 'ERROR', "Duplicated employee id in csv file: '{}'".format(csv_stat[1]))
+                time.sleep(WAIT_SEC)
             else:
-                write_log(LOGGER, 'CRITICAL', "File '{file}' doesn't exist".format(file=CSV_FILE))
-                raise SystemExit("CSV file doesn't exist")
+                time.sleep(WAIT_SEC)
+            init_md5 = current_md5
         except KeyboardInterrupt:
             print('{}: csv2ldap stopped by the user'.format(time.strftime('%d.%m.%Y %X')))
             break
