@@ -231,22 +231,20 @@ def check_csv(data_file):
     """
 
     empl_ids = []
-    not_unique = []
+    not_unique = set()
     with open(data_file, 'r', encoding=CSV_ENCODING) as file:
         rows = csv.reader(file)
         for row in rows:
             if len(row) > 0:
                 employeeid = row[0].split(CSV_DELIM)
                 empl_ids.append(employeeid[0])
-    # Remove header
-    empl_ids = empl_ids[1:]
-
-    for empl_id in empl_ids:
+    # Skip header
+    for empl_id in empl_ids[1:]:
         if empl_ids.count(empl_id) > 1:
-            not_unique.append(empl_id)
+            not_unique.add(empl_id)
 
     if len(not_unique) > 0:
-        return False, set(not_unique)
+        return False, ', '.join(not_unique)
     else:
         return True
 
@@ -295,15 +293,15 @@ def load_csv(conn, data_file, delimiter=';'):
                         method = PREP_DICT[attr].lower()
                         original_attr = row[ATTR_MATCHING_DICT[attr]]
                         corrected_attr = preprocessing(original_attr, method)
-                        update_dict[attr] = corrected_attr
+                        update_dict[attr] = corrected_attr.strip()
                     else:
                         # Fill update dict by static attributes from CSV
-                        update_dict[attr] = row[ATTR_MATCHING_DICT[attr]]
+                        update_dict[attr] = row[ATTR_MATCHING_DICT[attr]].strip()
 
                 # Calculate rest attributes
-                sn = update_dict['sn']
-                given_name = update_dict['givenname']
-                middle_name = update_dict['middlename']
+                sn = update_dict['sn'].strip()
+                given_name = update_dict['givenname'].strip()
+                middle_name = update_dict['middlename'].strip()
                 if middle_name != '':
                     initials = "{}. {}.".format(given_name[0], middle_name[0])
                     description = '{sn} {gn} {mn}'.format(sn=sn, gn=given_name, mn=middle_name)
@@ -317,7 +315,7 @@ def load_csv(conn, data_file, delimiter=';'):
                 # mobile
                 update_dict['mobile'] = transform_mobile(row['MobilePhone'])
                 # manager
-                manager_dn = get_dn(conn, employeeid=row['ManagerEmployeeID'])
+                manager_dn = get_dn(conn, row['ManagerEmployeeID'])
                 if len(manager_dn) == 1:
                     manager_dn = manager_dn[0]
                 else:
@@ -348,7 +346,7 @@ def run_update(conn):
     # Processing CSV file...
     csv_data = load_csv(conn, CSV_FILE, CSV_DELIM)
     # Getting all need users from LDAP
-    ad_users = get_users(conn=conn, searchfilter=LDAP_SEARCHFILTER)
+    ad_users = get_users(conn, LDAP_SEARCHFILTER)
 
     for user in ad_users:
         if user.employeeID.value in csv_data:
@@ -407,7 +405,7 @@ if __name__ == '__main__':
     # Parse all given arguments
     parser = ArgumentParser(description='Script for load data from CSV to LDAP catalog.', add_help=True)
     parser.add_argument('-c', '--config', type=str, default='csv2ldap.conf', help='Path to config file')
-    parser.add_argument('-w', '--wait', type=int, help='Timeout before next run')
+    parser.add_argument('-w', '--wait', type=int, help='Timeout before next csv file check')
     parser.add_argument('-v', '--version', action='version', version=VERSION, help='Print the script version and exit')
     args = parser.parse_args()
 
