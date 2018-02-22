@@ -90,8 +90,8 @@ def ldap_connect(ldap_server, ldap_user, ldap_password):
     try:
         conn = ldap3.Connection(srv, auto_bind=True, authentication='NTLM', user=ldap_user, password=ldap_password)
     except LDAPSocketOpenError as e:
-        write_log(LOGGER, 'CRITICAL', "Cannot connect to LDAP server: {srv}".format(srv=ldap_server))
-        raise SystemExit('ERROR: {message}'.format(message=e.__str__()))
+        write_log(LOGGER, 'CRITICAL', "Cannot connect to LDAP server: {}".format(ldap_server))
+        raise SystemExit('ERROR: {}'.format(e.__str__()))
     return conn
 
 
@@ -144,7 +144,6 @@ def get_dn(conn, employeeid):
     List with LDAP user DN's.
     """
 
-    # Making search filter (employeeID by default)
     filter_str = '(&(objectClass=user)(EmployeeID={}))'.format(employeeid)
 
     # Search in LDAP with our filter
@@ -168,8 +167,7 @@ def preprocessing(attr_value, method):
     Corrected attribute.
     """
 
-    # Replacing
-    if method.lower().startswith('replace'):
+    if method.startswith('replace'):
         # Making tuple with replacement data without the first 'replace' word.
         try:
             replace_expr = literal_eval(method[7:])
@@ -183,19 +181,16 @@ def preprocessing(attr_value, method):
             # When nested tuples is ended, write 'new_attr' value
             else:
                 new_attr = attr_value
-        # else we have just one tuple, so just make a replace
         else:
             regexp, repl_str = replace_expr
             new_attr = re.sub(regexp, repl_str, attr_value)
-
-    # Operations with register
-    elif method.lower() == 'capitalize':
+    elif method == 'capitalize':
         new_attr = attr_value.capitalize()
-    elif method.lower() == 'title':
+    elif method == 'title':
         new_attr = attr_value.title()
-    elif method.lower() == 'lower':
+    elif method == 'lower':
         new_attr = attr_value.lower()
-    elif method.lower() == 'upper':
+    elif method == 'upper':
         new_attr = attr_value.upper()
     else:
         new_attr = None
@@ -232,17 +227,20 @@ def check_csv(data_file):
 
     empl_ids = []
     not_unique = set()
+
     with open(data_file, 'r', encoding=CSV_ENCODING) as file:
-        rows = csv.reader(file)
+        rows = csv.reader(file, delimiter=CSV_DELIM)
+        header_length = len(next(rows))
         for row in rows:
-            if len(row) > 0:
-                employeeid = row[0].split(CSV_DELIM)
-                empl_ids.append(employeeid[0])
-    # Skip header
+            row_len = len(row)
+            if row_len > 0:
+                empl_ids.append(row[0])
+            if row_len != header_length:
+                return False, "ERROR: CSV File miss or has extra field in line {}".format(rows.line_num)
+
     for empl_id in empl_ids[1:]:
         if empl_ids.count(empl_id) > 1:
             not_unique.add(empl_id)
-
     if len(not_unique) > 0:
         return False, ', '.join(not_unique)
     else:
@@ -271,65 +269,58 @@ def load_csv(conn, data_file, delimiter=';'):
     # Opening CSV file and read it as dict
     with open(data_file, 'r', encoding=CSV_ENCODING) as users_csv:
         csv_data = csv.DictReader(users_csv, delimiter=delimiter)
-        line_num = 1
         for row in csv_data:
             empl_id = row['EmployeeID']
-            # If in values has None, it means that data count bigger than headers and CSV is incorrect
-            if None not in row.values():
-                calc_attrs = ['initials', 'description', 'mobile', 'manager', 'displayname']
-                update_attrs = list(set(LDAP_UPD_ATTRS) - set(calc_attrs))
+            calc_attrs = ['initials', 'description', 'mobile', 'manager', 'displayname']
+            update_attrs = list(set(LDAP_UPD_ATTRS) - set(calc_attrs))
 
-                # If user in exception list, subtract it's attrs from all update attributes in config file
-                if empl_id in EXCEPTION_DICT:
-                    # If user in exception list and has * as attributes - skip it
-                    if EXCEPTION_DICT[empl_id][0] == '*':
-                        continue
-                    update_attrs = list(set(update_attrs) - set(EXCEPTION_DICT[empl_id]))
-                update_dict = {}
+            # If user in exception list, subtract it's attrs from all update attributes in config file
+            if empl_id in EXCEPTION_DICT:
+                # If user in exception list and has * as attributes - skip it
+                if EXCEPTION_DICT[empl_id][0] == '*':
+                    continue
+                update_attrs = list(set(update_attrs) - set(EXCEPTION_DICT[empl_id]))
+            update_dict = {}
 
-                for attr in update_attrs:
-                    # Preprocessing
-                    if attr in (key.lower() for key in PREP_DICT.keys()):
-                        method = PREP_DICT[attr].lower()
-                        original_attr = row[ATTR_MATCHING_DICT[attr]]
-                        corrected_attr = preprocessing(original_attr, method)
-                        update_dict[attr] = corrected_attr.strip()
-                    else:
-                        # Fill update dict by static attributes from CSV
-                        update_dict[attr] = row[ATTR_MATCHING_DICT[attr]].strip()
-
-                # Calculate rest attributes
-                sn = update_dict['sn'].strip()
-                given_name = update_dict['givenname'].strip()
-                middle_name = update_dict['middlename'].strip()
-                if middle_name != '':
-                    initials = "{}. {}.".format(given_name[0], middle_name[0])
-                    description = '{sn} {gn} {mn}'.format(sn=sn, gn=given_name, mn=middle_name)
+            for attr in update_attrs:
+                # Preprocessing
+                if attr in (key.lower() for key in PREP_DICT.keys()):
+                    method = PREP_DICT[attr].lower()
+                    original_attr = row[ATTR_MATCHING_DICT[attr]]
+                    corrected_attr = preprocessing(original_attr, method.lower())
+                    update_dict[attr] = corrected_attr.strip()
                 else:
-                    initials = "{}.".format(given_name[0])
-                    description = '{sn} {gn}'.format(sn=sn, gn=given_name)
-                update_dict['initials'] = initials
-                update_dict['description'] = description
-                update_dict['displayname'] = '{sn} {initials}'.format(sn=sn, initials=initials)
+                    # Fill update dict by static attributes from CSV
+                    update_dict[attr] = row[ATTR_MATCHING_DICT[attr]].strip()
 
-                # mobile
-                update_dict['mobile'] = transform_mobile(row['MobilePhone'])
-                # manager
-                manager_dn = get_dn(conn, row['ManagerEmployeeID'])
-                if len(manager_dn) == 1:
-                    manager_dn = manager_dn[0]
-                else:
-                    manager_dn = ""
-                    write_log(LOGGER, 'WARNING', "Found '{}' users for '{}' employeeid".format(
-                        len(manager_dn), row['ManagerEmployeeID']))
-                update_dict['manager'] = manager_dn
-
-                # Put update_dict to the global dict
-                all_employees[empl_id] = update_dict
+            # Calculate rest attributes
+            sn = update_dict['sn'].strip()
+            given_name = update_dict['givenname'].strip()
+            middle_name = update_dict['middlename'].strip()
+            if middle_name != '':
+                initials = "{}. {}.".format(given_name[0], middle_name[0])
+                description = '{sn} {gn} {mn}'.format(sn=sn, gn=given_name, mn=middle_name)
             else:
-                write_log(LOGGER, 'WARNING', "Missed values in CSV, line '{}'.".format(line_num))
-            # Incrementing line counter
-            line_num += 1
+                initials = "{}.".format(given_name[0])
+                description = '{sn} {gn}'.format(sn=sn, gn=given_name)
+            update_dict['initials'] = initials
+            update_dict['description'] = description
+            update_dict['displayname'] = '{sn} {initials}'.format(sn=sn, initials=initials)
+
+            # mobile
+            update_dict['mobile'] = transform_mobile(row['MobilePhone'])
+            # manager
+            manager_dn = get_dn(conn, row['ManagerEmployeeID'])
+            if len(manager_dn) == 1:
+                manager_dn = manager_dn[0]
+            elif len(manager_dn) > 0:
+                manager_dn = ""
+                write_log(LOGGER, 'WARNING', "Found '{}' users for '{}' employeeid".format(
+                    len(manager_dn), row['ManagerEmployeeID']))
+            update_dict['manager'] = manager_dn
+
+            # Put update_dict to the global dict
+            all_employees[empl_id] = update_dict
     return all_employees
 
 
@@ -343,7 +334,7 @@ def run_update(conn):
     None
     """
 
-    # Processing CSV file...
+    # Loading CSV file
     csv_data = load_csv(conn, CSV_FILE, CSV_DELIM)
     # Getting all need users from LDAP
     ad_users = get_users(conn, LDAP_SEARCHFILTER)
@@ -355,46 +346,36 @@ def run_update(conn):
             update_attrs = LDAP_UPD_ATTRS
             if user.employeeID.value in EXCEPTION_DICT:
                 update_attrs = set(LDAP_UPD_ATTRS) - set(EXCEPTION_DICT[user.employeeID.value])
-            # Compare current attribute value from LDAP and new from CSV
             for attr in update_attrs:
                 curr_val = user[attr].value
                 new_val = csv_data[user.employeeID.value][attr]
                 if curr_val is None:
                     curr_val = ""
                 if curr_val != new_val:
-                    # MODIFY_REPLACE if new_value length not equal zero
-                    if len(new_val) != 0:
+                    if new_val:
                         update_dict[attr] = [('MODIFY_REPLACE', [new_val.encode()])]
-                    # MODIFY_DELETE if new value length is zero
                     else:
                         update_dict[attr] = [('MODIFY_DELETE', [curr_val])]
-                # DEBUG: write to log, if new value equal current value
-                else:
-                    log_data = {
-                        'login': user.sAMAccountName.value,
-                        'prop_name': attr
-                    }
+                else:  # DEBUG
+                    log_data = {'login': user.sAMAccountName.value, 'attr': attr}
                     write_log(LOGGER, 'DEBUG',
-                              "User '{login}' has '{prop_name}' property with same value : SKIP".format(**log_data))
+                              "User '{login}' has '{attr}' property with same value : SKIP".format(**log_data))
             # Running update
-            if len(update_dict) != 0:
-                upd_result = update_user(conn, user.entry_dn, update_dict)
+            if update_dict:
+                upd_result, upd_message = update_user(conn, user.entry_dn, update_dict)
                 log_data = {'login': user.sAMAccountName.value,
-                            'props': list(update_dict.keys()),
-                            'msg': upd_result[1]
+                            'props': ', '.join(update_dict.keys()),
+                            'msg': upd_message
                             }
-                if upd_result[0] is True:
+                if upd_result is True:
                     write_log(LOGGER, 'INFO', '{login} : {props} : {msg}'.format(**log_data))
                 else:
                     write_log(LOGGER, 'ERROR', '{login} : {props} : {msg}'.format(**log_data))
         # DEBUG: Write to log, if user not found in CSV
         else:
-            log_data = {
-                'login': user.sAMAccountName.value,
-                'employeeID': user.employeeID.value,
-            }
+            log_data = {'login': user.sAMAccountName.value, 'employeeID': user.employeeID.value}
             write_log(LOGGER, 'DEBUG',
-                      "User '{login}' with ID '{employeeID}' : 'NOT FOUND IN 1C : SKIP'".format(**log_data))
+                      "User '{login}' with ID '{employeeID}' not found in CSV file : SKIP".format(**log_data))
     print('{}: Update task complete, waiting for new data'.format(time.strftime('%d.%m.%Y %X')))
 
 
