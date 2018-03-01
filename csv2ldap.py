@@ -324,6 +324,86 @@ def load_csv(conn, data_file, delimiter=';'):
     return all_employees
 
 
+def load_csv_new(conn, data_file):
+    """
+    The function prepares CSV data to synchronize with LDAP. It's read the file, process it and return dict with
+    data for update.
+
+    :param conn:
+    ldap3.Connection object.
+    :param data_file:
+    str() Path to CSV datafile.
+    :return:
+    dict()
+    {'employeeID': {Dict with LDAP attrs properties}}
+    {'0000001029': {'sn': 'Ivanov', 'givenName': 'Ivan'}}
+    """
+
+    all_employees = {}
+
+    # Opening CSV file and read it as dict
+    with open(data_file, 'r', encoding=CSV_ENCODING) as users_csv:
+        csv_data = csv.reader(users_csv, delimiter=CSV_DELIM)
+        csv_header = [item.lower() for item in next(csv_data)]
+        for row in csv_data:
+            user = dict(zip(csv_header, row))
+
+            # Not sure that is good
+            assert 'employeeid' in csv_header, "'employeeid' not in CSV header"
+            assert 'sn' in csv_header, "'sn' not in CSV header"
+            assert 'givenname' in csv_header, "'givenname' not in CSV header"
+            assert 'middlename' in csv_header, "'middlename' not in CSV header"
+
+            empl_id = user['employeeid']
+            calc_attrs = {'initials', 'description', 'mobile', 'manager', 'displayname'}
+            update_attrs = set(csv_header) - calc_attrs
+
+            # If user in exception list, subtract it's attrs from all update attributes in config file
+            if empl_id in EXCEPTION_DICT:
+                if EXCEPTION_DICT[empl_id][0] == '*':
+                    continue
+                update_attrs = update_attrs - set(EXCEPTION_DICT[empl_id])
+            update_dict = {}
+
+            for attr in update_attrs:
+                # Preprocessing
+                if attr in PREP_DICT.keys():
+                    method = PREP_DICT[attr]
+                    corrected_attr = preprocessing(user[attr], method)
+                    update_dict[attr] = corrected_attr.strip()
+                else:
+                    # Fill update dict by static attributes from CSV
+                    update_dict[attr] = user[attr].strip()
+
+            # Calculate rest attributes
+            sn = update_dict['sn'].strip()
+            given_name = update_dict['givenname'].strip()
+            middle_name = update_dict['middlename'].strip()
+            if middle_name != '':
+                update_dict['initials'] = "{}. {}.".format(given_name[0], middle_name[0])
+                update_dict['description'] = '{} {} {}'.format(sn, given_name, middle_name)
+            else:
+                update_dict['initials'] = "{}.".format(given_name[0])
+                update_dict['description'] = '{} {}'.format(sn, given_name)
+            update_dict['displayname'] = '{} {}'.format(sn, update_dict['initials'])
+
+            # mobile
+            update_dict['mobile'] = transform_mobile(user['mobile'])
+            # manager
+            manager_dn = get_dn(conn, user['manager'])
+            if len(manager_dn) == 1:
+                manager_dn = manager_dn[0]
+            elif len(manager_dn) > 0:
+                manager_dn = ""
+                write_log(LOGGER, 'WARNING', "Found '{}' users for '{}' employeeid".format(
+                    len(manager_dn), user['manager']))
+            update_dict['manager'] = manager_dn
+
+            # Put update_dict to the global dict
+            all_employees[empl_id] = update_dict
+    return all_employees
+
+
 def run_update(conn):
     """
     The function runs update process.
@@ -335,7 +415,7 @@ def run_update(conn):
     """
 
     # Loading CSV file
-    csv_data = load_csv(conn, CSV_FILE, CSV_DELIM)
+    csv_data = load_csv_new(conn, CSV_FILE)
     # Getting all need users from LDAP
     ad_users = get_users(conn, LDAP_SEARCHFILTER)
 
@@ -386,12 +466,12 @@ if __name__ == '__main__':
     # Parse all given arguments
     parser = ArgumentParser(description='Script for load data from CSV to LDAP catalog.', add_help=True)
     parser.add_argument('-c', '--config', type=str, default='csv2ldap.conf', help='Path to config file')
-    parser.add_argument('-w', '--wait', type=int, help='Timeout before next csv file check')
+    parser.add_argument('-w', '--wait', type=int, help='Timeout in seconds before next circle')
     parser.add_argument('-v', '--version', action='version', version=VERSION, help='Print the script version and exit')
     args = parser.parse_args()
 
     # Lading config from file
-    config = read_config(path=args.config)
+    config = read_config(args.config)
 
     # MAIN section
     if config.has_section('MAIN'):
@@ -402,12 +482,12 @@ if __name__ == '__main__':
 
     # LDAP section
     if config.has_section('LDAP'):
-        LDAP_SERVER = config.get('LDAP', 'Server')
+        LDAP_SERVER = config.get('LDAP', 'server')
         LDAP_USER = config.get('LDAP', 'username')
         LDAP_PASSWORD = config.get('LDAP', 'password')
         LDAP_SEARCHFILTER = config.get('LDAP', 'searchfilter')
-        attrs = list(map(lambda x: x.lower(), config.get('LDAP', 'updateldapattrs').split(',')))
-        LDAP_GET_ATTRS = attrs + ['sAMAccountName', 'employeeID']
+        attrs = [attr.lower() for attr in config.get('LDAP', 'updateldapattrs').split(',')]
+        LDAP_GET_ATTRS = attrs + ['samaccountname', 'employeeid']
         LDAP_UPD_ATTRS = attrs
     else:
         raise SystemExit("ERROR: Config file missed 'LDAP' section. You must specify it before run.")
@@ -427,20 +507,18 @@ if __name__ == '__main__':
             EXCEPTION_DICT[eid] = attrs.split(',')
 
     # ATTR MATCHING section
-    ATTR_MATCHING_DICT = {}
     if config.has_section('ATTR MATCHING') and config.items('ATTR MATCHING'):
         ATTR_MATCHING_DICT = dict(config.items('ATTR MATCHING'))
 
     # PREPROCESSING section
-    PREP_DICT = {}
     if config.has_section('PREPROCESSING') and config.items('PREPROCESSING'):
-        PREP_DICT = dict(config.items('PREPROCESSING'))
+        PREP_DICT = dict((attr.lower(), value) for attr, value in config.items('PREPROCESSING'))
 
     # LOGGING section
-    LOG_LEVEL = config.get('LOGGING', 'level')
-    LOG_PATH = config.get('LOGGING', 'filepath')
-    LOG_SIZE = config.getint('LOGGING', 'filesize')
-    LOG_COUNT = config.getint('LOGGING', 'rotation')
+    LOG_LEVEL = config.get('LOGGING', 'level', fallback='INFO')
+    LOG_PATH = config.get('LOGGING', 'filepath', fallback='')
+    LOG_SIZE = config.getint('LOGGING', 'filesize', fallback=1024)
+    LOG_COUNT = config.getint('LOGGING', 'rotation', fallback=2)
 
     # Logger parameter
     logging.basicConfig(level=LOG_LEVEL)
