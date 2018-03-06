@@ -473,32 +473,30 @@ if __name__ == '__main__':
     # Lading config from file
     config = read_config(args.config)
 
+    for section in ['MAIN', 'CSV', 'LDAP']:
+        if not config.has_section(section):
+            raise SystemExit('CRITICAL: Config file missing "{}" section'.format(section))
+
     # MAIN section
-    if config.has_section('MAIN'):
-        WAIT_SEC = config.getint('MAIN', 'waitseconds', fallback=30)
-        DATE_FMT = config.get('MAIN', 'DateFormat', fallback='%d.%m.%Y %X')
+    WAIT_SEC = config.getint('MAIN', 'waitseconds', fallback=30)
+    DATE_FMT = config.get('MAIN', 'DateFormat', fallback='%d.%m.%Y %X')
+
     if args.wait:
         WAIT_SEC = args.wait
 
     # LDAP section
-    if config.has_section('LDAP'):
-        LDAP_SERVER = config.get('LDAP', 'server')
-        LDAP_USER = config.get('LDAP', 'username')
-        LDAP_PASSWORD = config.get('LDAP', 'password')
-        LDAP_SEARCHFILTER = config.get('LDAP', 'searchfilter')
-        attrs = [attr.lower() for attr in config.get('LDAP', 'updateldapattrs').split(',')]
-        LDAP_GET_ATTRS = attrs + ['samaccountname', 'employeeid']
-        LDAP_UPD_ATTRS = attrs
-    else:
-        raise SystemExit("ERROR: Config file missed 'LDAP' section. You must specify it before run.")
+    LDAP_SERVER = config.get('LDAP', 'server')
+    LDAP_USER = config.get('LDAP', 'username')
+    LDAP_PASSWORD = config.get('LDAP', 'password')
+    LDAP_SEARCHFILTER = config.get('LDAP', 'searchfilter')
+    attrs = [attr.lower() for attr in config.get('LDAP', 'updateldapattrs').split(',')]
+    LDAP_GET_ATTRS = attrs + ['samaccountname', 'employeeid']
+    LDAP_UPD_ATTRS = attrs
 
     # CSV section
-    if config.has_section('CSV'):
-        CSV_FILE = config.get('CSV', 'FilePath')
-        CSV_DELIM = config.get('CSV', 'Delimiter')
-        CSV_ENCODING = config.get('CSV', 'Encoding')
-    else:
-        raise SystemExit("ERROR: Config file missed 'CSV' section. You must specify it before run.")
+    CSV_FILE = config.get('CSV', 'FilePath')
+    CSV_DELIM = config.get('CSV', 'Delimiter')
+    CSV_ENCODING = config.get('CSV', 'Encoding')
 
     # EXCEPTION section
     EXCEPTION_DICT = {}
@@ -517,20 +515,20 @@ if __name__ == '__main__':
     # LOGGING section
     LOG_LEVEL = config.get('LOGGING', 'level', fallback='INFO')
     LOG_PATH = config.get('LOGGING', 'filepath', fallback='')
-    LOG_SIZE = config.getint('LOGGING', 'filesize', fallback=1024)
+    LOG_SIZE = config.getint('LOGGING', 'filesize', fallback=1048576)
     LOG_COUNT = config.getint('LOGGING', 'rotation', fallback=2)
 
     # Logger parameter
     logging.basicConfig(level=LOG_LEVEL)
-    log_formatter = logging.Formatter(fmt="%(levelname)-9s: '%(asctime)s' %(message)s", datefmt='%d.%m.%Y %X')
+    log_formatter = logging.Formatter(fmt="%(levelname)-9s: '%(asctime)s' %(message)s", datefmt=DATE_FMT)
     log_handler = RotatingFileHandler(filename=LOG_PATH, maxBytes=LOG_SIZE, backupCount=LOG_COUNT, encoding='utf-8')
 
     # Creating logger
     LOGGER = get_logger(handler=log_handler, formatter=log_formatter)
 
     init_md5 = ''
-    write_log(LOGGER, 'INFO', 'Starting csv2ldap at {}'.format(time.strftime('%d.%m.%Y %X')))
-    print('\n{}: csv2ldap started.\nPress CTRL-C to stop it...'.format(time.strftime('%d.%m.%Y %X')))
+    write_log(LOGGER, 'INFO', 'Starting csv2ldap at {}'.format(time.strftime(DATE_FMT)))
+    print('\n{}: csv2ldap started.\nPress CTRL-C to stop it...'.format(time.strftime(DATE_FMT)))
     while True:
         try:
             try:
@@ -541,7 +539,7 @@ if __name__ == '__main__':
                 raise SystemExit('Cannot read CSV file: {}'.format(CSV_FILE))
 
             if init_md5 != current_md5:
-                print('{}: Update task started'.format(time.strftime('%d.%m.%Y %X')))
+                print('{}: Update task started'.format(time.strftime(DATE_FMT)))
                 csv_stat = check_csv(CSV_FILE)
                 if csv_stat is True:
                     with ldap_connect(LDAP_SERVER, LDAP_USER, LDAP_PASSWORD) as ldap_conn:
@@ -553,4 +551,4 @@ if __name__ == '__main__':
                 time.sleep(WAIT_SEC)
             init_md5 = current_md5
         except KeyboardInterrupt:
-            raise SystemExit('{}: csv2ldap stopped by the user'.format(time.strftime('%d.%m.%Y %X')))
+            raise SystemExit('{}: csv2ldap stopped by the user'.format(time.strftime(DATE_FMT)))
