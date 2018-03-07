@@ -54,21 +54,22 @@ def write_log(logger, err_level, message):
         logger.log(20, 'Logger has just got "None" for write to log. Going ahead...')
 
 
-def get_logger(handler, formatter):
+def get_logger():
     """
     Getting logger object.
 
-    :param handler:
-    logging.Handler - set log handler (where you will write log string)
-    :param formatter:
-    logging.Formatter - set log string format.
     :return:
     Logger object
     """
 
-    handler.setFormatter(formatter)
+    # Define logger parameter
+    logging.basicConfig(level=LOG_LEVEL)
+    log_formatter = logging.Formatter(fmt="%(levelname)-9s: '%(asctime)s' %(message)s", datefmt=DATE_FMT)
+    log_handler = RotatingFileHandler(filename=LOG_PATH, maxBytes=LOG_SIZE, backupCount=LOG_COUNT, encoding='utf-8')
+
+    log_handler.setFormatter(log_formatter)
     logger = logging.getLogger()
-    logger.addHandler(handler)
+    logger.addHandler(log_handler)
     return logger
 
 
@@ -86,7 +87,8 @@ def ldap_connect(ldap_server, ldap_user, ldap_password):
     ldap3.Connection object.
     """
 
-    srv = ldap3.Server(ldap_server, get_info='ALL', mode='IP_V4_PREFERRED')
+    print('DEBUG: Establishing connection with SSL: {}'.format(LDAP_SSL))
+    srv = ldap3.Server(ldap_server, get_info='ALL', mode='IP_V4_PREFERRED', use_ssl=LDAP_SSL)
     try:
         conn = ldap3.Connection(srv, auto_bind=True, authentication='NTLM', user=ldap_user, password=ldap_password)
     except LDAPSocketOpenError as e:
@@ -114,7 +116,7 @@ def update_user(conn, user_dn, updates):
     return conn.modify(user_dn, updates), conn.result['description']
 
 
-def get_users(conn, searchfilter):
+def get_users(conn, searchfilter, attrs):
     """
     Function search users in LDAP catalog using search filter in config file.
 
@@ -122,12 +124,14 @@ def get_users(conn, searchfilter):
     ldap3.Connection object.
     :param searchfilter:
     LDAP search filter from config file.
+    :param attrs:
+    List of attributes to get from catalog.
     :return:
     dict with all found objects.
     """
-
+    print("DEBUG, get_users, attributes to get from catalog", attrs)
     base_dn = conn.server.info.other['rootDomainNamingContext'][0]
-    conn.search(search_base=base_dn, search_filter=searchfilter, attributes=LDAP_GET_ATTRS)
+    conn.search(search_base=base_dn, search_filter=searchfilter, attributes=attrs)
     ldap_users = conn.entries
     return ldap_users
 
@@ -247,84 +251,7 @@ def check_csv(data_file):
         return True
 
 
-def load_csv(conn, data_file, delimiter=';'):
-    """
-    The function prepares CSV data to synchronize with LDAP. It's read the file, process it and return dict with
-    data for update.
-
-    :param conn:
-    ldap3.Connection object.
-    :param data_file:
-    str() Path to CSV datafile.
-    :param delimiter:
-    str() Delimiter to separate CSV columns. Default is ';', can be set in config file.
-    :return:
-    dict()
-    {'employeeID': {Dict with LDAP attrs properties}}
-    {'0000001029': {'sn': 'Ivanov', 'givenName': 'Ivan'}}
-    """
-
-    all_employees = {}
-
-    # Opening CSV file and read it as dict
-    with open(data_file, 'r', encoding=CSV_ENCODING) as users_csv:
-        csv_data = csv.DictReader(users_csv, delimiter=delimiter)
-        for row in csv_data:
-            empl_id = row['EmployeeID']
-            calc_attrs = ['initials', 'description', 'mobile', 'manager', 'displayname']
-            update_attrs = list(set(LDAP_UPD_ATTRS) - set(calc_attrs))
-
-            # If user in exception list, subtract it's attrs from all update attributes in config file
-            if empl_id in EXCEPTION_DICT:
-                # If user in exception list and has * as attributes - skip it
-                if EXCEPTION_DICT[empl_id][0] == '*':
-                    continue
-                update_attrs = list(set(update_attrs) - set(EXCEPTION_DICT[empl_id]))
-            update_dict = {}
-
-            for attr in update_attrs:
-                # Preprocessing
-                if attr in (key.lower() for key in PREP_DICT.keys()):
-                    method = PREP_DICT[attr].lower()
-                    original_attr = row[ATTR_MATCHING_DICT[attr]]
-                    corrected_attr = preprocessing(original_attr, method.lower())
-                    update_dict[attr] = corrected_attr.strip()
-                else:
-                    # Fill update dict by static attributes from CSV
-                    update_dict[attr] = row[ATTR_MATCHING_DICT[attr]].strip()
-
-            # Calculate rest attributes
-            sn = update_dict['sn'].strip()
-            given_name = update_dict['givenname'].strip()
-            middle_name = update_dict['middlename'].strip()
-            if middle_name != '':
-                initials = "{}. {}.".format(given_name[0], middle_name[0])
-                description = '{sn} {gn} {mn}'.format(sn=sn, gn=given_name, mn=middle_name)
-            else:
-                initials = "{}.".format(given_name[0])
-                description = '{sn} {gn}'.format(sn=sn, gn=given_name)
-            update_dict['initials'] = initials
-            update_dict['description'] = description
-            update_dict['displayname'] = '{sn} {initials}'.format(sn=sn, initials=initials)
-
-            # mobile
-            update_dict['mobile'] = transform_mobile(row['MobilePhone'])
-            # manager
-            manager_dn = get_dn(conn, row['ManagerEmployeeID'])
-            if len(manager_dn) == 1:
-                manager_dn = manager_dn[0]
-            elif len(manager_dn) > 0:
-                manager_dn = ""
-                write_log(LOGGER, 'WARNING', "Found '{}' users for '{}' employeeid".format(
-                    len(manager_dn), row['ManagerEmployeeID']))
-            update_dict['manager'] = manager_dn
-
-            # Put update_dict to the global dict
-            all_employees[empl_id] = update_dict
-    return all_employees
-
-
-def load_csv_new(conn, data_file):
+def load_csv(conn, data_file):
     """
     The function prepares CSV data to synchronize with LDAP. It's read the file, process it and return dict with
     data for update.
@@ -334,8 +261,7 @@ def load_csv_new(conn, data_file):
     :param data_file:
     str() Path to CSV datafile.
     :return:
-    dict()
-    {'employeeID': {Dict with LDAP attrs properties}}
+    Tuple with csv header and dict() like this:
     {'0000001029': {'sn': 'Ivanov', 'givenName': 'Ivan'}}
     """
 
@@ -355,8 +281,8 @@ def load_csv_new(conn, data_file):
             assert 'middlename' in csv_header, "'middlename' not in CSV header"
 
             empl_id = user['employeeid']
-            calc_attrs = {'initials', 'description', 'mobile', 'manager', 'displayname'}
-            update_attrs = set(csv_header) - calc_attrs
+            calc_attrs = LDAP_CALC_ATTRS + ['mobile', 'manager']
+            update_attrs = set(csv_header) - set(calc_attrs)
 
             # If user in exception list, subtract it's attrs from all update attributes in config file
             if empl_id in EXCEPTION_DICT:
@@ -389,6 +315,7 @@ def load_csv_new(conn, data_file):
 
             # mobile
             update_dict['mobile'] = transform_mobile(user['mobile'])
+
             # manager
             manager_dn = get_dn(conn, user['manager'])
             if len(manager_dn) == 1:
@@ -401,7 +328,7 @@ def load_csv_new(conn, data_file):
 
             # Put update_dict to the global dict
             all_employees[empl_id] = update_dict
-    return all_employees
+    return csv_header, all_employees
 
 
 def run_update(conn):
@@ -415,18 +342,21 @@ def run_update(conn):
     """
 
     # Loading CSV file
-    csv_data = load_csv_new(conn, CSV_FILE)
+    csv_header, csv_data = load_csv(conn, CSV_FILE)
+    attrs_to_update = csv_header + LDAP_CALC_ATTRS
+
     # Getting all need users from LDAP
-    ad_users = get_users(conn, LDAP_SEARCHFILTER)
+    ad_users = get_users(conn, LDAP_SEARCHFILTER, attrs_to_update + ['samaccountname', 'employeeid'])
+    print("DEBUG: run_update, list attrs to update", attrs_to_update)
+    time.sleep(5)
 
     for user in ad_users:
         if user.employeeID.value in csv_data:
             # Update dict for one-time update of many attributes
             update_dict = {}
-            update_attrs = LDAP_UPD_ATTRS
             if user.employeeID.value in EXCEPTION_DICT:
-                update_attrs = set(LDAP_UPD_ATTRS) - set(EXCEPTION_DICT[user.employeeID.value])
-            for attr in update_attrs:
+                attrs_to_update = set(LDAP_CALC_ATTRS) - set(EXCEPTION_DICT[user.employeeID.value])
+            for attr in attrs_to_update:
                 curr_val = user[attr].value
                 new_val = csv_data[user.employeeID.value][attr]
                 if curr_val is None:
@@ -488,10 +418,9 @@ if __name__ == '__main__':
     LDAP_SERVER = config.get('LDAP', 'server')
     LDAP_USER = config.get('LDAP', 'username')
     LDAP_PASSWORD = config.get('LDAP', 'password')
+    LDAP_SSL = config.getboolean('LDAP', 'use_ssl', fallback=False)
     LDAP_SEARCHFILTER = config.get('LDAP', 'searchfilter')
-    attrs = [attr.lower() for attr in config.get('LDAP', 'updateldapattrs').split(',')]
-    LDAP_GET_ATTRS = attrs + ['samaccountname', 'employeeid']
-    LDAP_UPD_ATTRS = attrs
+    LDAP_CALC_ATTRS = [attr.lower() for attr in config.get('LDAP', 'calculated_attrs').split(',')]
 
     # CSV section
     CSV_FILE = config.get('CSV', 'FilePath')
@@ -499,10 +428,8 @@ if __name__ == '__main__':
     CSV_ENCODING = config.get('CSV', 'Encoding')
 
     # EXCEPTION section
-    EXCEPTION_DICT = {}
     if config.has_section('EXCEPTIONS') and config.items('EXCEPTIONS'):
-        for eid, attrs in config.items('EXCEPTIONS'):
-            EXCEPTION_DICT[eid] = attrs.split(',')
+        EXCEPTION_DICT = dict((eid, attrs.split(',')) for eid, attrs in config.items('EXCEPTIONS'))
 
     # ATTR MATCHING section
     if config.has_section('ATTR MATCHING') and config.items('ATTR MATCHING'):
@@ -518,13 +445,8 @@ if __name__ == '__main__':
     LOG_SIZE = config.getint('LOGGING', 'filesize', fallback=1048576)
     LOG_COUNT = config.getint('LOGGING', 'rotation', fallback=2)
 
-    # Logger parameter
-    logging.basicConfig(level=LOG_LEVEL)
-    log_formatter = logging.Formatter(fmt="%(levelname)-9s: '%(asctime)s' %(message)s", datefmt=DATE_FMT)
-    log_handler = RotatingFileHandler(filename=LOG_PATH, maxBytes=LOG_SIZE, backupCount=LOG_COUNT, encoding='utf-8')
-
     # Creating logger
-    LOGGER = get_logger(handler=log_handler, formatter=log_formatter)
+    LOGGER = get_logger()
 
     init_md5 = ''
     write_log(LOGGER, 'INFO', 'Starting csv2ldap at {}'.format(time.strftime(DATE_FMT)))
