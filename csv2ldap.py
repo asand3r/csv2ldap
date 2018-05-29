@@ -62,10 +62,19 @@ def get_logger():
     Logger object
     """
 
+    # Parse log size
+    units = {'B': 1, 'KIB': 2**10, 'MIB': 2**20, 'GIB': 2**30,
+             'TIB': 2**40, 'KB': 10**3, 'MB': 10**6, 'GB': 10**9, 'TB': 10**12}
+    if len(LOG_SIZE.split()) == 2:
+        number, unit = LOG_SIZE.split()
+        log_bytes = int(float(number) * units[unit.upper()])
+    else:
+        log_bytes = float(LOG_SIZE)
+
     # Define logger parameter
     logging.basicConfig(level=LOG_LEVEL)
     log_formatter = logging.Formatter(fmt="%(levelname)-9s: '%(asctime)s' %(message)s", datefmt=DATE_FMT)
-    log_handler = RotatingFileHandler(filename=LOG_PATH, maxBytes=LOG_SIZE, backupCount=LOG_COUNT, encoding='utf-8')
+    log_handler = RotatingFileHandler(filename=LOG_PATH, maxBytes=log_bytes, backupCount=LOG_COUNT, encoding='utf-8')
 
     log_handler.setFormatter(log_formatter)
     logger = logging.getLogger()
@@ -87,7 +96,6 @@ def ldap_connect(ldap_server, ldap_user, ldap_password):
     ldap3.Connection object.
     """
 
-    print('DEBUG: Establishing connection with SSL: {}'.format(LDAP_SSL))
     srv = ldap3.Server(ldap_server, get_info='ALL', mode='IP_V4_PREFERRED', use_ssl=LDAP_SSL)
     try:
         conn = ldap3.Connection(srv, auto_bind=True, authentication='NTLM', user=ldap_user, password=ldap_password)
@@ -129,7 +137,7 @@ def get_users(conn, searchfilter, attrs):
     :return:
     dict with all found objects.
     """
-    print("DEBUG, get_users, attributes to get from catalog", attrs)
+
     base_dn = conn.server.info.other['rootDomainNamingContext'][0]
     conn.search(search_base=base_dn, search_filter=searchfilter, attributes=attrs)
     ldap_users = conn.entries
@@ -201,7 +209,7 @@ def preprocessing(attr_value, method):
     return new_attr
 
 
-def transform_mobile(phone_number):
+def normalize_mobile(phone_number):
     """
     The function transform phone number to one format.
     :param phone_number:
@@ -232,23 +240,26 @@ def check_csv(data_file):
     empl_ids = []
     not_unique = set()
 
+    # Check csv header and fill employeeIDs list
     with open(data_file, 'r', encoding=CSV_ENCODING) as file:
         rows = csv.reader(file, delimiter=CSV_DELIM)
-        header_length = len(next(rows))
+        header = [item.lower() for item in next(rows)]
+        header_length = len(header)
         for row in rows:
             row_len = len(row)
             if row_len > 0:
                 empl_ids.append(row[0])
-            if row_len != header_length:
+            if row_len != header_length and row_len != 0:
                 return False, "ERROR: CSV File miss or has extra field in line {}".format(rows.line_num)
 
+    # Check employeeID unique
     for empl_id in empl_ids[1:]:
         if empl_ids.count(empl_id) > 1:
             not_unique.add(empl_id)
     if len(not_unique) > 0:
         return False, ', '.join(not_unique)
     else:
-        return True
+        return True, header
 
 
 def load_csv(conn, data_file):
@@ -270,19 +281,10 @@ def load_csv(conn, data_file):
     # Opening CSV file and read it as dict
     with open(data_file, 'r', encoding=CSV_ENCODING) as users_csv:
         csv_data = csv.reader(users_csv, delimiter=CSV_DELIM)
-        csv_header = [item.lower() for item in next(csv_data)]
         for row in csv_data:
-            user = dict(zip(csv_header, row))
-
-            # Not sure that is good
-            assert 'employeeid' in csv_header, "'employeeid' not in CSV header"
-            assert 'sn' in csv_header, "'sn' not in CSV header"
-            assert 'givenname' in csv_header, "'givenname' not in CSV header"
-            assert 'middlename' in csv_header, "'middlename' not in CSV header"
-
+            user = dict(zip(CSV_HEADER, row))
             empl_id = user['employeeid']
-            calc_attrs = LDAP_CALC_ATTRS + ['mobile', 'manager']
-            update_attrs = set(csv_header) - set(calc_attrs)
+            update_attrs = set(CSV_HEADER) - set(LDAP_CALC_ATTRS)
 
             # If user in exception list, subtract it's attrs from all update attributes in config file
             if empl_id in EXCEPTION_DICT:
@@ -314,7 +316,7 @@ def load_csv(conn, data_file):
             update_dict['displayname'] = '{} {}'.format(sn, update_dict['initials'])
 
             # mobile
-            update_dict['mobile'] = transform_mobile(user['mobile'])
+            update_dict['mobile'] = normalize_mobile(user['mobile'])
 
             # manager
             manager_dn = get_dn(conn, user['manager'])
@@ -328,7 +330,7 @@ def load_csv(conn, data_file):
 
             # Put update_dict to the global dict
             all_employees[empl_id] = update_dict
-    return csv_header, all_employees
+    return all_employees
 
 
 def run_update(conn):
@@ -342,20 +344,19 @@ def run_update(conn):
     """
 
     # Loading CSV file
-    csv_header, csv_data = load_csv(conn, CSV_FILE)
-    attrs_to_update = csv_header + LDAP_CALC_ATTRS
-
+    csv_data = load_csv(conn, CSV_FILE)
+    attrs_to_update = CSV_HEADER + LDAP_CALC_ATTRS
     # Getting all need users from LDAP
-    ad_users = get_users(conn, LDAP_SEARCHFILTER, attrs_to_update + ['samaccountname', 'employeeid'])
-    print("DEBUG: run_update, list attrs to update", attrs_to_update)
-    time.sleep(5)
+    ad_users = get_users(conn, LDAP_SEARCHFILTER, attrs_to_update + ['samaccountname'])
 
     for user in ad_users:
         if user.employeeID.value in csv_data:
             # Update dict for one-time update of many attributes
             update_dict = {}
             if user.employeeID.value in EXCEPTION_DICT:
-                attrs_to_update = set(LDAP_CALC_ATTRS) - set(EXCEPTION_DICT[user.employeeID.value])
+                # print("DEBUG: {} in exception list".format(user.employeeID.value))
+                attrs_to_update = set(attrs_to_update) - set(EXCEPTION_DICT[user.employeeID.value])
+                # print("DEBUG: his attributes for updating {}".format(attrs_to_update))
             for attr in attrs_to_update:
                 curr_val = user[attr].value
                 new_val = csv_data[user.employeeID.value][attr]
@@ -398,17 +399,25 @@ if __name__ == '__main__':
     parser.add_argument('-c', '--config', type=str, default='csv2ldap.conf', help='Path to config file')
     parser.add_argument('-w', '--wait', type=int, help='Timeout in seconds before next circle')
     parser.add_argument('-v', '--version', action='version', version=VERSION, help='Print the script version and exit')
+    parser.add_argument('-o', '--onetime', action='store_true', help='Start once and exit')
+    parser.add_argument('--debug', action='store_true', help='Enables debug mode')
+    parser.add_argument('--showcfg', action='store_true', help='Show loaded config and exit')
     args = parser.parse_args()
 
     # Lading config from file
     config = read_config(args.config)
+
+    # Enable debug mode
+    if args.debug:
+        print('DEBUG mode: ON')
+        DEBUG = True
 
     for section in ['MAIN', 'CSV', 'LDAP']:
         if not config.has_section(section):
             raise SystemExit('CRITICAL: Config file missing "{}" section'.format(section))
 
     # MAIN section
-    WAIT_SEC = config.getint('MAIN', 'waitseconds', fallback=30)
+    WAIT_SEC = config.getint('MAIN', 'wait', fallback=30)
     DATE_FMT = config.get('MAIN', 'DateFormat', fallback='%d.%m.%Y %X')
 
     if args.wait:
@@ -424,16 +433,12 @@ if __name__ == '__main__':
 
     # CSV section
     CSV_FILE = config.get('CSV', 'FilePath')
-    CSV_DELIM = config.get('CSV', 'Delimiter')
-    CSV_ENCODING = config.get('CSV', 'Encoding')
+    CSV_DELIM = config.get('CSV', 'Delimiter', fallback=';')
+    CSV_ENCODING = config.get('CSV', 'Encoding', fallback='utf-8')
 
     # EXCEPTION section
     if config.has_section('EXCEPTIONS') and config.items('EXCEPTIONS'):
         EXCEPTION_DICT = dict((eid, attrs.split(',')) for eid, attrs in config.items('EXCEPTIONS'))
-
-    # ATTR MATCHING section
-    if config.has_section('ATTR MATCHING') and config.items('ATTR MATCHING'):
-        ATTR_MATCHING_DICT = dict(config.items('ATTR MATCHING'))
 
     # PREPROCESSING section
     if config.has_section('PREPROCESSING') and config.items('PREPROCESSING'):
@@ -441,36 +446,53 @@ if __name__ == '__main__':
 
     # LOGGING section
     LOG_LEVEL = config.get('LOGGING', 'level', fallback='INFO')
-    LOG_PATH = config.get('LOGGING', 'filepath', fallback='')
-    LOG_SIZE = config.getint('LOGGING', 'filesize', fallback=1048576)
+    LOG_PATH = config.get('LOGGING', 'LogPath', fallback='')
+    LOG_SIZE = config.get('LOGGING', 'MaxFileSize', fallback=1048576)
     LOG_COUNT = config.getint('LOGGING', 'rotation', fallback=2)
+
+    if args.showcfg:
+        for section in config.sections():
+            print("\n[{}]".format(section))
+            for option in config.options(section):
+                print("{0:25} = {1:}".format(option, config.get(section, option)))
+        exit(0)
 
     # Creating logger
     LOGGER = get_logger()
 
-    init_md5 = ''
-    write_log(LOGGER, 'INFO', 'Starting csv2ldap at {}'.format(time.strftime(DATE_FMT)))
-    print('\n{}: csv2ldap started.\nPress CTRL-C to stop it...'.format(time.strftime(DATE_FMT)))
-    while True:
-        try:
+    if not args.onetime:
+        init_md5 = ''
+        write_log(LOGGER, 'INFO', 'Starting csv2ldap at {}'.format(time.strftime(DATE_FMT)))
+        print('\n{}: csv2ldap started.\nPress CTRL-C to stop it...'.format(time.strftime(DATE_FMT)))
+        while True:
             try:
-                with open(CSV_FILE, 'rb') as csv_file:
-                    current_md5 = md5(csv_file.read()).hexdigest()
-            except (IOError, FileNotFoundError):
-                write_log(LOGGER, 'CRITICAL', 'Cannot read CSV file: {}'.format(CSV_FILE))
-                raise SystemExit('Cannot read CSV file: {}'.format(CSV_FILE))
+                try:
+                    with open(CSV_FILE, 'rb') as csv_file:
+                        current_md5 = md5(csv_file.read()).hexdigest()
+                except (IOError, FileNotFoundError):
+                    write_log(LOGGER, 'CRITICAL', 'Cannot read CSV file: {}'.format(CSV_FILE))
+                    raise SystemExit('Cannot read CSV file: {}'.format(CSV_FILE))
 
-            if init_md5 != current_md5:
-                print('{}: Update task started'.format(time.strftime(DATE_FMT)))
-                csv_stat = check_csv(CSV_FILE)
-                if csv_stat is True:
-                    with ldap_connect(LDAP_SERVER, LDAP_USER, LDAP_PASSWORD) as ldap_conn:
-                        run_update(ldap_conn)
+                if init_md5 != current_md5:
+                    print('{}: Update task started'.format(time.strftime(DATE_FMT)))
+                    csv_stat, CSV_HEADER = check_csv(CSV_FILE)
+                    if csv_stat is True:
+                        with ldap_connect(LDAP_SERVER, LDAP_USER, LDAP_PASSWORD) as ldap_conn:
+                            run_update(ldap_conn)
+                    else:
+                        write_log(LOGGER, 'ERROR', "Duplicated employee id in csv file: '{}'".format(csv_stat[1]))
+                    time.sleep(WAIT_SEC)
                 else:
-                    write_log(LOGGER, 'ERROR', "Duplicated employee id in csv file: '{}'".format(csv_stat[1]))
-                time.sleep(WAIT_SEC)
-            else:
-                time.sleep(WAIT_SEC)
-            init_md5 = current_md5
-        except KeyboardInterrupt:
-            raise SystemExit('{}: csv2ldap stopped by the user'.format(time.strftime(DATE_FMT)))
+                    time.sleep(WAIT_SEC)
+                init_md5 = current_md5
+            except KeyboardInterrupt:
+                raise SystemExit('{}: csv2ldap stopped by the user'.format(time.strftime(DATE_FMT)))
+    else:
+        print('{}: One time update task started'.format(time.strftime(DATE_FMT)))
+        csv_stat, CSV_HEADER = check_csv(CSV_FILE)
+        if csv_stat is True:
+            with ldap_connect(LDAP_SERVER, LDAP_USER, LDAP_PASSWORD) as ldap_conn:
+                run_update(ldap_conn)
+                exit(0)
+        else:
+            write_log(LOGGER, 'ERROR', "Duplicated employee id in csv file: '{}'".format(csv_stat[1]))
