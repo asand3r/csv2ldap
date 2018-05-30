@@ -22,7 +22,7 @@ employeeid;sn;givenName;middleName;physicalDeliveryOfficeName;telephoneNumber;mo
 0000000987;Petrov;Petr;Petrovich;1068;646;;Engineer;Main division;Engineers department;0000000456
 ```
 
-If you seed to clear some user attribute or your CRM just hasn't it, leve it empty like exapmle above.
+If you need to clear some user attribute or your CRM just hasn't it, leve it empty like exapmle above.
 
 ## Config file mandatory options
 You must correct the config file before start. It has four mandatory options what you must feel anyway:
