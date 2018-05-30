@@ -1,2 +1,2 @@
-﻿EmployeeID;Surname;GivenName;MiddleName;Office;ShortPhoneNumber;MobilePhone;JobTitle;Department;ManagerEmployeeID
-0000001071;Ivaniv;Ivan;Ivanovich;123;42;8(098)765-43-12;Manger;Manager department;0000000093
+﻿employeeid;sn;givenName;middleName;physicalDeliveryOfficeName;telephoneNumber;mobile;title;division;department;manager
+0000000123;Иванов;Иван;Иванович;1068;645;+7 (916) 012-34-56;Самый важный человек;Главное подразделение;Важный отдел;0000000456
