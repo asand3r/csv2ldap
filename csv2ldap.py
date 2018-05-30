@@ -250,14 +250,14 @@ def check_csv(data_file):
             if row_len > 0:
                 empl_ids.append(row[0])
             if row_len != header_length and row_len != 0:
-                return False, "ERROR: CSV File miss or has extra field in line {}".format(rows.line_num)
+                return False, "CSV File content error. Check line {}.".format(rows.line_num)
 
     # Check employeeID unique
     for empl_id in empl_ids[1:]:
         if empl_ids.count(empl_id) > 1:
             not_unique.add(empl_id)
     if len(not_unique) > 0:
-        return False, ', '.join(not_unique)
+        return False, "Duplicated employeeids in CSV file: {}".format(', '.join(not_unique))
     else:
         return True, header
 
@@ -293,26 +293,29 @@ def load_csv(conn, data_file):
                 update_attrs = update_attrs - set(EXCEPTION_DICT[empl_id])
             update_dict = {}
 
+            # Do preprocessing if needed
             for attr in update_attrs:
-                # Preprocessing
-                if attr in PREP_DICT.keys():
-                    method = PREP_DICT[attr]
-                    corrected_attr = preprocessing(user[attr], method)
+                if attr in PREP_DICT:
+                    prep_rule = PREP_DICT[attr]
+                    corrected_attr = preprocessing(user[attr], prep_rule)
                     update_dict[attr] = corrected_attr.strip()
                 else:
-                    # Fill update dict by static attributes from CSV
                     update_dict[attr] = user[attr].strip()
 
             # Calculate rest attributes
-            sn = update_dict['sn'].strip()
-            given_name = update_dict['givenname'].strip()
-            middle_name = update_dict['middlename'].strip()
+            # Initials and Description
+            sn = update_dict['sn']
+            given_name = update_dict['givenname']
+            middle_name = update_dict['middlename']
+
             if middle_name != '':
                 update_dict['initials'] = "{}. {}.".format(given_name[0], middle_name[0])
                 update_dict['description'] = '{} {} {}'.format(sn, given_name, middle_name)
             else:
                 update_dict['initials'] = "{}.".format(given_name[0])
                 update_dict['description'] = '{} {}'.format(sn, given_name)
+
+            # DisplayName
             update_dict['displayname'] = '{} {}'.format(sn, update_dict['initials'])
 
             # mobile
@@ -327,6 +330,9 @@ def load_csv(conn, data_file):
                 write_log(LOGGER, 'WARNING', "Found '{}' users for '{}' employeeid".format(
                     len(manager_dn), user['manager']))
             update_dict['manager'] = manager_dn
+
+            # extensionattribute2
+            update_dict['extensionattribute2'] = update_dict['division']
 
             # Put update_dict to the global dict
             all_employees[empl_id] = update_dict
@@ -398,7 +404,7 @@ if __name__ == '__main__':
     parser = ArgumentParser(description='Script for load data from CSV to LDAP catalog.', add_help=True)
     parser.add_argument('-c', '--config', type=str, default='csv2ldap.conf', help='Path to config file')
     parser.add_argument('-w', '--wait', type=int, help='Timeout in seconds before next circle')
-    parser.add_argument('-v', '--version', action='version', version=VERSION, help='Print the script version and exit')
+    parser.add_argument('-v', '--version', action='version', version=VERSION, help='Print script version and exit')
     parser.add_argument('-o', '--onetime', action='store_true', help='Start once and exit')
     parser.add_argument('--debug', action='store_true', help='Enables debug mode')
     parser.add_argument('--showcfg', action='store_true', help='Show loaded config and exit')
@@ -428,13 +434,19 @@ if __name__ == '__main__':
     LDAP_USER = config.get('LDAP', 'username')
     LDAP_PASSWORD = config.get('LDAP', 'password')
     LDAP_SSL = config.getboolean('LDAP', 'use_ssl', fallback=False)
-    LDAP_SEARCHFILTER = config.get('LDAP', 'searchfilter')
+    LDAP_SEARCHFILTER = config.get('LDAP', 'searchfilter', fallback='(&(objectCategory=person)(objectclass=user)')
     LDAP_CALC_ATTRS = [attr.lower() for attr in config.get('LDAP', 'calculated_attrs').split(',')]
 
     # CSV section
-    CSV_FILE = config.get('CSV', 'FilePath')
+    CSV_FILE = config.get('CSV', 'CsvPath')
     CSV_DELIM = config.get('CSV', 'Delimiter', fallback=';')
     CSV_ENCODING = config.get('CSV', 'Encoding', fallback='utf-8')
+
+    # LOGGING section
+    LOG_LEVEL = config.get('LOGGING', 'level', fallback='INFO')
+    LOG_PATH = config.get('LOGGING', 'LogPath', fallback='')
+    LOG_SIZE = config.get('LOGGING', 'MaxFileSize', fallback=1048576)
+    LOG_COUNT = config.getint('LOGGING', 'rotation', fallback=2)
 
     # EXCEPTION section
     if config.has_section('EXCEPTIONS') and config.items('EXCEPTIONS'):
@@ -443,12 +455,6 @@ if __name__ == '__main__':
     # PREPROCESSING section
     if config.has_section('PREPROCESSING') and config.items('PREPROCESSING'):
         PREP_DICT = dict((attr.lower(), value) for attr, value in config.items('PREPROCESSING'))
-
-    # LOGGING section
-    LOG_LEVEL = config.get('LOGGING', 'level', fallback='INFO')
-    LOG_PATH = config.get('LOGGING', 'LogPath', fallback='')
-    LOG_SIZE = config.get('LOGGING', 'MaxFileSize', fallback=1048576)
-    LOG_COUNT = config.getint('LOGGING', 'rotation', fallback=2)
 
     if args.showcfg:
         for section in config.sections():
@@ -480,7 +486,7 @@ if __name__ == '__main__':
                         with ldap_connect(LDAP_SERVER, LDAP_USER, LDAP_PASSWORD) as ldap_conn:
                             run_update(ldap_conn)
                     else:
-                        write_log(LOGGER, 'ERROR', "Duplicated employee id in csv file: '{}'".format(csv_stat[1]))
+                        write_log(LOGGER, 'ERROR', "{}".format(CSV_HEADER))
                     time.sleep(WAIT_SEC)
                 else:
                     time.sleep(WAIT_SEC)
@@ -495,4 +501,4 @@ if __name__ == '__main__':
                 run_update(ldap_conn)
                 exit(0)
         else:
-            write_log(LOGGER, 'ERROR', "Duplicated employee id in csv file: '{}'".format(csv_stat[1]))
+            write_log(LOGGER, 'ERROR', "{}".format(CSV_HEADER))
