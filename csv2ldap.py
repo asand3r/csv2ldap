@@ -281,61 +281,60 @@ def load_csv(conn, data_file):
     # Opening CSV file and read it as dict
     with open(data_file, 'r', encoding=CSV_ENCODING) as users_csv:
         csv_data = csv.reader(users_csv, delimiter=CSV_DELIM)
+        next(csv_data)
         for row in csv_data:
-            user = dict(zip(CSV_HEADER, row))
-            empl_id = user['employeeid']
-            update_attrs = set(CSV_HEADER) - set(LDAP_CALC_ATTRS)
+            if len(row) != 0:
+                user = dict(zip(CSV_HEADER, row))
+                empl_id = user['employeeid']
+                update_attrs = set(CSV_HEADER) - set(LDAP_CALC_ATTRS)
 
-            # If user in exception list, subtract it's attrs from all update attributes in config file
-            if empl_id in EXCEPTION_DICT:
-                if EXCEPTION_DICT[empl_id][0] == '*':
-                    continue
-                update_attrs = update_attrs - set(EXCEPTION_DICT[empl_id])
-            update_dict = {}
+                # If user in exception list, subtract it's attrs from all update attributes in config file
+                if empl_id in EXCEPTION_DICT:
+                    if EXCEPTION_DICT[empl_id][0] == '*':
+                        continue
+                    update_attrs = update_attrs - set(EXCEPTION_DICT[empl_id])
+                update_dict = {}
 
-            # Do preprocessing if needed
-            for attr in update_attrs:
-                if attr in PREP_DICT:
-                    prep_rule = PREP_DICT[attr]
-                    corrected_attr = preprocessing(user[attr], prep_rule)
-                    update_dict[attr] = corrected_attr.strip()
+                # Do preprocessing if needed
+                for attr in update_attrs:
+                    if attr in PREP_DICT:
+                        prep_rule = PREP_DICT[attr]
+                        corrected_attr = preprocessing(user[attr], prep_rule)
+                        update_dict[attr] = corrected_attr.strip()
+                    else:
+                        update_dict[attr] = user[attr].strip()
+
+                # Calculate rest attributes
+                # Initials and Description
+                sn = update_dict['sn']
+                given_name = update_dict['givenname']
+                middle_name = update_dict['middlename']
+
+                if middle_name != '':
+                    update_dict['initials'] = "{}. {}.".format(given_name[0], middle_name[0])
+                    update_dict['description'] = '{} {} {}'.format(sn, given_name, middle_name)
                 else:
-                    update_dict[attr] = user[attr].strip()
+                    update_dict['initials'] = "{}.".format(given_name[0])
+                    update_dict['description'] = '{} {}'.format(sn, given_name)
 
-            # Calculate rest attributes
-            # Initials and Description
-            sn = update_dict['sn']
-            given_name = update_dict['givenname']
-            middle_name = update_dict['middlename']
+                # DisplayName
+                update_dict['displayname'] = '{} {}'.format(sn, update_dict['initials'])
 
-            if middle_name != '':
-                update_dict['initials'] = "{}. {}.".format(given_name[0], middle_name[0])
-                update_dict['description'] = '{} {} {}'.format(sn, given_name, middle_name)
-            else:
-                update_dict['initials'] = "{}.".format(given_name[0])
-                update_dict['description'] = '{} {}'.format(sn, given_name)
+                # mobile
+                update_dict['mobile'] = normalize_mobile(user['mobile'])
 
-            # DisplayName
-            update_dict['displayname'] = '{} {}'.format(sn, update_dict['initials'])
+                # manager
+                manager_dn = get_dn(conn, user['manager'])
+                if len(manager_dn) == 1:
+                    manager_dn = manager_dn[0]
+                elif len(manager_dn) > 0:
+                    manager_dn = ""
+                    write_log(LOGGER, 'WARNING', "Found '{}' users for '{}' employeeid".format(
+                        len(manager_dn), user['manager']))
+                update_dict['manager'] = manager_dn
 
-            # mobile
-            update_dict['mobile'] = normalize_mobile(user['mobile'])
-
-            # manager
-            manager_dn = get_dn(conn, user['manager'])
-            if len(manager_dn) == 1:
-                manager_dn = manager_dn[0]
-            elif len(manager_dn) > 0:
-                manager_dn = ""
-                write_log(LOGGER, 'WARNING', "Found '{}' users for '{}' employeeid".format(
-                    len(manager_dn), user['manager']))
-            update_dict['manager'] = manager_dn
-
-            # extensionattribute2
-            update_dict['extensionattribute2'] = update_dict['division']
-
-            # Put update_dict to the global dict
-            all_employees[empl_id] = update_dict
+                # Put update_dict to the global dict
+                all_employees[empl_id] = update_dict
     return all_employees
 
 
