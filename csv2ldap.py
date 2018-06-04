@@ -262,7 +262,7 @@ def check_csv(data_file):
         return True, header
 
 
-def load_csv(conn, data_file):
+def load_csv(conn, data_file, data_file_header):
     """
     The function prepares CSV data to synchronize with LDAP. It's read the file, process it and return dict with
     data for update.
@@ -271,6 +271,8 @@ def load_csv(conn, data_file):
     ldap3.Connection object.
     :param data_file:
     str() Path to CSV datafile.
+    :param data_file_header:
+    Header of data_file.
     :return:
     Tuple with csv header and dict() like this:
     {'0000001029': {'sn': 'Ivanov', 'givenName': 'Ivan'}}
@@ -284,9 +286,9 @@ def load_csv(conn, data_file):
         next(csv_data)
         for row in csv_data:
             if len(row) != 0:
-                user = dict(zip(CSV_HEADER, row))
+                user = dict(zip(data_file_header, row))
                 empl_id = user['employeeid']
-                update_attrs = set(CSV_HEADER) - set(LDAP_CALC_ATTRS)
+                update_attrs = set(data_file_header) - set(LDAP_CALC_ATTRS)
 
                 # If user in exception list, subtract it's attrs from all update attributes in config file
                 if empl_id in EXCEPTION_DICT:
@@ -338,19 +340,23 @@ def load_csv(conn, data_file):
     return all_employees
 
 
-def run_update(conn):
+def run_update(conn, data_file, data_file_header):
     """
     The function runs update process.
 
     :param conn:
     Result of ldap_connect() function.
+    :param data_file:
+    Path to CSV file.
+    :param data_file_header:
+    Header of csv data file.
     :return:
     None
     """
 
     # Loading CSV file
-    csv_data = load_csv(conn, CSV_FILE)
-    attrs_to_update = CSV_HEADER + LDAP_CALC_ATTRS
+    csv_data = load_csv(conn, data_file, data_file_header)
+    attrs_to_update = data_file_header + LDAP_CALC_ATTRS
     # Getting all need users from LDAP
     ad_users = get_users(conn, LDAP_SEARCHFILTER, attrs_to_update + ['samaccountname'])
 
@@ -358,11 +364,8 @@ def run_update(conn):
         if user.employeeID.value in csv_data:
             # Update dict for one-time update of many attributes
             update_dict = {}
-            if user.employeeID.value in EXCEPTION_DICT:
-                # print("DEBUG: {} in exception list".format(user.employeeID.value))
-                attrs_to_update = set(attrs_to_update) - set(EXCEPTION_DICT[user.employeeID.value])
-                # print("DEBUG: his attributes for updating {}".format(attrs_to_update))
-            for attr in attrs_to_update:
+
+            for attr in csv_data[user.employeeID.value].keys():
                 curr_val = user[attr].value
                 new_val = csv_data[user.employeeID.value][attr]
                 if curr_val is None:
@@ -450,6 +453,8 @@ if __name__ == '__main__':
     # EXCEPTION section
     if config.has_section('EXCEPTIONS') and config.items('EXCEPTIONS'):
         EXCEPTION_DICT = dict((eid, attrs.split(',')) for eid, attrs in config.items('EXCEPTIONS'))
+    else:
+        EXCEPTION_DICT = {}
 
     # PREPROCESSING section
     if config.has_section('PREPROCESSING') and config.items('PREPROCESSING'):
@@ -480,12 +485,12 @@ if __name__ == '__main__':
 
                 if init_md5 != current_md5:
                     print('{}: Update task started'.format(time.strftime(DATE_FMT)))
-                    csv_stat, CSV_HEADER = check_csv(CSV_FILE)
+                    csv_stat, csv_header = check_csv(CSV_FILE)
                     if csv_stat is True:
                         with ldap_connect(LDAP_SERVER, LDAP_USER, LDAP_PASSWORD) as ldap_conn:
-                            run_update(ldap_conn)
+                            run_update(ldap_conn, CSV_FILE, csv_header)
                     else:
-                        write_log(LOGGER, 'ERROR', "{}".format(CSV_HEADER))
+                        write_log(LOGGER, 'ERROR', "{}".format(csv_header))
                     time.sleep(WAIT_SEC)
                 else:
                     time.sleep(WAIT_SEC)
@@ -494,10 +499,10 @@ if __name__ == '__main__':
                 raise SystemExit('{}: csv2ldap stopped by the user'.format(time.strftime(DATE_FMT)))
     else:
         print('{}: One time update task started'.format(time.strftime(DATE_FMT)))
-        csv_stat, CSV_HEADER = check_csv(CSV_FILE)
+        csv_stat, csv_header = check_csv(CSV_FILE)
         if csv_stat is True:
             with ldap_connect(LDAP_SERVER, LDAP_USER, LDAP_PASSWORD) as ldap_conn:
-                run_update(ldap_conn)
+                run_update(ldap_conn, CSV_FILE, csv_header)
                 exit(0)
         else:
-            write_log(LOGGER, 'ERROR', "{}".format(CSV_HEADER))
+            write_log(LOGGER, 'ERROR', "{}".format(csv_header))
