@@ -1,5 +1,5 @@
 # csv2ldap
-Utility can update LDAP user attributes to values from CSV file.
+Utility to update LDAP users attributes to values from CSV file.
 
 Dependencies:
 - Python => 3.4 (smaller version, what has been tested)
