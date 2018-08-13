@@ -470,9 +470,12 @@ if __name__ == '__main__':
     # Creating logger
     LOGGER = get_logger()
 
+    # Computerame
+    COMPUTERNAME = os.environ['COMPUTERNAME'] if os.name == 'nt' else os.environ['HOSTNAME']
+
     if not args.onetime:
         init_md5 = ''
-        write_log(LOGGER, 'INFO', 'Starting csv2ldap at {}'.format(time.strftime(DATE_FMT)))
+        write_log(LOGGER, 'INFO', 'Starting csv2ldap at {} on {}'.format(time.strftime(DATE_FMT), COMPUTERNAME))
         print('\n{}: csv2ldap started.\nPress CTRL-C to stop it...'.format(time.strftime(DATE_FMT)))
         while True:
             try:
