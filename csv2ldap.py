@@ -51,7 +51,7 @@ def write_log(logger, err_level, message):
     if message is not None:
         logger.log(codes_to_int[err_level], message)
     else:
-        logger.log(20, 'Logger has just got "None" for write to log. Going ahead...')
+        logger.log(20, 'Logger has just got "None" for write to log. Going ahead.')
 
 
 def get_logger():
@@ -63,8 +63,7 @@ def get_logger():
     """
 
     # Parse log size
-    units = {'B': 1, 'KIB': 2**10, 'MIB': 2**20, 'GIB': 2**30,
-             'TIB': 2**40, 'KB': 10**3, 'MB': 10**6, 'GB': 10**9, 'TB': 10**12}
+    units = {'B': 1, 'KB': 10**3, 'MB': 10**6}
     if len(LOG_SIZE.split()) == 2:
         number, unit = LOG_SIZE.split()
         log_bytes = int(float(number) * units[unit.upper()])
@@ -73,7 +72,7 @@ def get_logger():
 
     # Define logger parameter
     logging.basicConfig(level=LOG_LEVEL)
-    log_formatter = logging.Formatter(fmt="%(levelname)-9s: '%(asctime)s' %(message)s", datefmt=DATE_FMT)
+    log_formatter = logging.Formatter(fmt="%(levelname)s;%(asctime)s;%(message)s", datefmt=DATE_FMT)
     log_handler = RotatingFileHandler(filename=LOG_PATH, maxBytes=log_bytes, backupCount=LOG_COUNT, encoding='utf-8')
 
     log_handler.setFormatter(log_formatter)
@@ -257,7 +256,7 @@ def check_csv(data_file):
         if empl_ids.count(empl_id) > 1:
             not_unique.add(empl_id)
     if len(not_unique) > 0:
-        return False, "Duplicated employeeids in CSV file: {}".format(', '.join(not_unique))
+        return False, "Duplicated employee ID's in CSV file: {}".format(', '.join(not_unique))
     else:
         return True, header
 
@@ -335,12 +334,16 @@ def load_csv(conn, data_file, data_file_header):
                         len(manager_dn), user['manager']))
                 update_dict['manager'] = manager_dn
 
+                # Fill extensionAttribute1, extensionAttribute2
+                update_dict['extensionAttribute1'] = user['department'].strip()
+                update_dict['extensionAttribute2'] = user['title'].strip()
+
                 # Put update_dict to the global dict
                 all_employees[empl_id] = update_dict
     return all_employees
 
 
-def run_update(conn, data_file, data_file_header):
+def run_update(conn, data_file, data_header):
     """
     The function runs update process.
 
@@ -348,54 +351,69 @@ def run_update(conn, data_file, data_file_header):
     Result of ldap_connect() function.
     :param data_file:
     Path to CSV file.
-    :param data_file_header:
+    :param data_header:
     Header of csv data file.
     :return:
     None
     """
 
     # Loading CSV file
-    csv_data = load_csv(conn, data_file, data_file_header)
-    attrs_to_update = data_file_header + LDAP_CALC_ATTRS
+    csv_data = load_csv(conn, data_file, data_header)
+    attrs_to_update = data_header + LDAP_CALC_ATTRS
     # Getting all need users from LDAP
+    if DEBUG:
+        write_log(LOGGER, 'DEBUG', 'Loading data from LDAP')
     ad_users = get_users(conn, LDAP_SEARCHFILTER, attrs_to_update + ['samaccountname'])
+    if DEBUG:
+        write_log(LOGGER, 'DEBUG', 'Retrieve {} records'.format(len(ad_users)))
 
     for user in ad_users:
-        if user.employeeID.value in csv_data:
-            # Update dict for one-time update of many attributes
+        samname = user.sAMAccountName.value
+        eid = user.employeeID.value
+        user_dn = user.entry_dn
+        if DEBUG:
+            write_log(LOGGER, 'DEBUG', "Checking user '{}' with id '{}'".format(samname, eid))
+
+        if eid in csv_data:
+            if DEBUG:
+                write_log(LOGGER, 'DEBUG', "Employeeid '{}' found in CSV".format(eid))
+                write_log(LOGGER, 'DEBUG', "Attributes to update: '{}'".format(list(csv_data[eid].keys())))
+            # Forming update dict for one-time update of many attributes
             update_dict = {}
 
-            for attr in csv_data[user.employeeID.value].keys():
+            for attr in csv_data[eid].keys():
+                if DEBUG:
+                    write_log(LOGGER, 'DEBUG', "Checking '{}'".format(attr))
                 curr_val = user[attr].value
-                new_val = csv_data[user.employeeID.value][attr]
+                new_val = csv_data[eid][attr]
+                if DEBUG:
+                    write_log(LOGGER, 'DEBUG', "LDAP: '{}', CSV: '{}'".format(curr_val, new_val))
                 if curr_val is None:
                     curr_val = ""
                 if curr_val != new_val:
+                    if DEBUG:
+                        write_log(LOGGER, 'DEBUG', "'{}' needs update".format(attr, curr_val, new_val))
                     if new_val:
                         update_dict[attr] = [('MODIFY_REPLACE', [new_val.encode()])]
                     else:
                         update_dict[attr] = [('MODIFY_DELETE', [curr_val])]
                 else:  # DEBUG
-                    log_data = {'login': user.sAMAccountName.value, 'attr': attr}
-                    write_log(LOGGER, 'DEBUG',
-                              "User '{login}' has '{attr}' property with same value : SKIP".format(**log_data))
+                    write_log(LOGGER, 'DEBUG', "'{}' LDAP equal CSV. Skipping".format(attr))
+
             # Running update
             if update_dict:
-                upd_result, upd_message = update_user(conn, user.entry_dn, update_dict)
-                log_data = {'login': user.sAMAccountName.value,
-                            'props': ', '.join(update_dict.keys()),
-                            'msg': upd_message
-                            }
-                if upd_result is True:
-                    write_log(LOGGER, 'INFO', '{login} : {props} : {msg}'.format(**log_data))
+                upd_res, upd_msg = update_user(conn, user_dn, update_dict)
+                if upd_res:
+                    write_log(LOGGER, 'INFO', '{} : {} : {}'.format(samname, ', '.join(update_dict.keys()), upd_msg))
                 else:
-                    write_log(LOGGER, 'ERROR', '{login} : {props} : {msg}'.format(**log_data))
-        # DEBUG: Write to log, if user not found in CSV
+                    write_log(LOGGER, 'ERROR', '{} : {} : {}'.format(samname, ', '.join(update_dict.keys()), upd_msg))
+        # Write to log, if user not found in CSV
         else:
-            log_data = {'login': user.sAMAccountName.value, 'employeeID': user.employeeID.value}
-            write_log(LOGGER, 'DEBUG',
-                      "User '{login}' with ID '{employeeID}' not found in CSV file : SKIP".format(**log_data))
-    print('{}: Update task complete, waiting for new data'.format(time.strftime('%d.%m.%Y %X')))
+            write_log(LOGGER, 'INFO', "User '{}' with ID '{}' not found in CSV. Skipping".format(samname, eid))
+    if not ONE_TIME:
+        print('{}: Task has been completed, waiting {} seconds'.format(time.strftime('%d.%m.%Y %X'), WAIT_SEC))
+    else:
+        print('{}: Task has been completed'.format(time.strftime('%d.%m.%Y %X')))
 
 
 if __name__ == '__main__':
@@ -415,11 +433,6 @@ if __name__ == '__main__':
     # Lading config from file
     config = read_config(args.config)
 
-    # Enable debug mode
-    if args.debug:
-        print('DEBUG mode: ON')
-        DEBUG = True
-
     for section in ['MAIN', 'CSV', 'LDAP']:
         if not config.has_section(section):
             raise SystemExit('CRITICAL: Config file missing "{}" section'.format(section))
@@ -428,8 +441,22 @@ if __name__ == '__main__':
     WAIT_SEC = config.getint('MAIN', 'wait', fallback=30)
     DATE_FMT = config.get('MAIN', 'DateFormat', fallback='%d.%m.%Y %X')
 
-    if args.wait:
-        WAIT_SEC = args.wait
+    # LOGGING section
+    LOG_LEVEL = config.get('LOGGING', 'level', fallback='INFO')
+    LOG_PATH = config.get('LOGGING', 'LogPath', fallback='')
+    LOG_SIZE = config.get('LOGGING', 'MaxFileSize', fallback=1048576)
+    LOG_COUNT = config.getint('LOGGING', 'rotation', fallback=2)
+
+    # Creating logger
+    LOGGER = get_logger()
+
+    # Is debug enabled
+    if args.debug or LOG_LEVEL == 'DEBUG':
+        DEBUG = True
+        print('DEBUG mode: ON')
+    else:
+        print('DEBUG mode: OFF')
+        DEBUG = False
 
     # LDAP section
     LDAP_SERVER = config.get('LDAP', 'server')
@@ -443,12 +470,6 @@ if __name__ == '__main__':
     CSV_FILE = config.get('CSV', 'CsvPath')
     CSV_DELIM = config.get('CSV', 'Delimiter', fallback=';')
     CSV_ENCODING = config.get('CSV', 'Encoding', fallback='utf-8')
-
-    # LOGGING section
-    LOG_LEVEL = config.get('LOGGING', 'level', fallback='INFO')
-    LOG_PATH = config.get('LOGGING', 'LogPath', fallback='')
-    LOG_SIZE = config.get('LOGGING', 'MaxFileSize', fallback=1048576)
-    LOG_COUNT = config.getint('LOGGING', 'rotation', fallback=2)
 
     # EXCEPTION section
     if config.has_section('EXCEPTIONS') and config.items('EXCEPTIONS'):
@@ -467,15 +488,18 @@ if __name__ == '__main__':
                 print("{0:25} = {1:}".format(option, config.get(section, option)))
         exit(0)
 
-    # Creating logger
-    LOGGER = get_logger()
-
     # Computerame
     COMPUTERNAME = os.environ['COMPUTERNAME'] if os.name == 'nt' else os.environ['HOSTNAME']
 
+    # Is running for one time
+    ONE_TIME = args.onetime
+
+    if args.wait:
+        WAIT_SEC = args.wait
+
     if not args.onetime:
         init_md5 = ''
-        write_log(LOGGER, 'INFO', 'Starting csv2ldap at {} on {}'.format(time.strftime(DATE_FMT), COMPUTERNAME))
+        write_log(LOGGER, 'INFO', 'Starting csv2ldap on {}'.format(COMPUTERNAME))
         print('\n{}: csv2ldap started.\nPress CTRL-C to stop it...'.format(time.strftime(DATE_FMT)))
         while True:
             try:
@@ -501,6 +525,7 @@ if __name__ == '__main__':
             except KeyboardInterrupt:
                 raise SystemExit('{}: csv2ldap stopped by the user'.format(time.strftime(DATE_FMT)))
     else:
+        write_log(LOGGER, 'INFO', 'Starting csv2ldap at {} on {}'.format(time.strftime(DATE_FMT), COMPUTERNAME))
         print('{}: One time update task started'.format(time.strftime(DATE_FMT)))
         csv_stat, csv_header = check_csv(CSV_FILE)
         if csv_stat is True:
